@@ -1,0 +1,28 @@
+{
+  "name": "vrchat-ytdlp-fix",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "start:stub": "bun run stub/index.ts",
+    "build:stub": "bun build stub/index.ts --compile --minify --outfile stub.exe",
+    "build:main": "bun build src/index.ts --compile --minify --sourcemap --outfile 'VRChat yt-dlp Fix.exe'"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@guiiai/logg": "^1.0.10",
+    "@std/ini": "npm:@jsr/std__ini",
+    "@types/lodash": "^4.17.20",
+    "@types/prompts": "^2.4.9",
+    "date-fns": "^4.1.0",
+    "elysia": "^1.3.13",
+    "lodash": "^4.17.21",
+    "prompts": "^2.4.2"
+  }
+}
