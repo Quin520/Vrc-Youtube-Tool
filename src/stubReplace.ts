@@ -16,23 +16,33 @@ export default async () => {
   await replaceYtdlp();
   const watcher = fs.watch(toolsPath, (event, filename) => {
     log.debug(`[${event}] ${filename}`);
-    if (event === 'change' && filename === 'yt-dlp.exe') {
+    if (filename === 'yt-dlp.exe') {
       debouncedReplaceYtdlp()
     }
   });
+  setInterval(replaceYtdlp, 5000)
 }
 
+let inProcess = false;
 const replaceYtdlp = async () => {
-  if (await fsP.exists(ytdlpPath)) {
-    const stat = await fsP.stat(ytdlpPath);
-    if (stat.size === stubStat.size && stat.mtimeMs === stubStat.mtimeMs) {
-      log.debug(`yt-dlp.exe 没有变化，跳过替换`);
-      return;
+  if (inProcess) return;
+  inProcess = true;
+  try {
+    if (await fsP.exists(ytdlpPath)) {
+      const stat = await fsP.stat(ytdlpPath);
+      if (stat.size === stubStat.size && stat.mtimeMs === stubStat.mtimeMs) {
+        log.debug(`yt-dlp.exe 没有变化，跳过替换`);
+        return;
+      }
+      await fsP.unlink(ytdlpPath);
     }
-    await fsP.unlink(ytdlpPath);
+    await fsP.copyFile('stub.exe', ytdlpPath);
+    log.log(`已将 stub.exe 替换到 ${ytdlpPath}`);
+  } catch (e) {
+    log.warn(`yt-dlp.exe 替换失败`);
+  } finally {
+    inProcess = false;
   }
-  await fsP.copyFile('stub.exe', ytdlpPath);
-  log.log(`已将 stub.exe 替换到 ${ytdlpPath}`);
 }
 
-const debouncedReplaceYtdlp = _.debounce(replaceYtdlp, 1000);
+const debouncedReplaceYtdlp = _.debounce(replaceYtdlp, 2000);

@@ -92,7 +92,7 @@ export const initWizard = async () => {
     choices: [
       { title: '只使用 MP4 格式的流，最高可能只支持 480P，优点是兼容性好，缺点是分辨率低', value: 'mp4' },
       { title: '使用 HLS 格式，直通分片列表给 VRChat，应该需要使用 AVPro 播放器才能播放', value: 'hls-direct' },
-      { title: '使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，可能会有问题', value: 'hls-mux' }
+      { title: '使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，很可能用不了', value: 'hls-mux' }
     ],
     initial: ['mp4', 'hls-direct', 'hls-mux'].indexOf(config.streamMode || 'mp4')
   }])
