@@ -127,7 +127,7 @@ export const testParse = async () => {
     log.log('解析结果: ' + stdout)
     return stdout.startsWith('http');
   } catch (e: any) {
-    log.errorWithError("解析失败", e);
+    log.withField('stdout', e.stdout).withField('stderr', e.stderr).errorWithError("解析失败", e);
     return false;
   }
 }

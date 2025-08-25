@@ -13,8 +13,8 @@ export const loadConfig = async () => {
       config.ytdlp = './yt-dlp.exe';
     }
   }
-  if (!await fsP.exists('./config.ini')) return false;
-  const iniContent = await fsP.readFile('./config.ini', 'utf-8');
+  if (!await fsP.exists(config.configPath)) return false;
+  const iniContent = await fsP.readFile(config.configPath, 'utf-8');
   try {
     const ini = parse(iniContent) as any;
     log.withFields(ini).debug('读取配置文件');
@@ -29,6 +29,9 @@ export const loadConfig = async () => {
 
     if (ini.general?.['exit-with-vrchat']) {
       config.exitWithVrc = ['true', '1', 'yes', 'on'].includes(ini.general['exit-with-vrchat'].toLowerCase());
+    }
+    if (ini.general?.['debug-fetch']) {
+      config.debugFetch = ['true', '1', 'yes', 'on'].includes(ini.general['debug-fetch'].toLowerCase());
     }
 
     if (ini.ytdlp?.path) {
@@ -68,6 +71,9 @@ export const saveConfig = async () => {
   lines.push(`; 代理服务器的地址，格式为 host:port`);
   lines.push(`proxy = ${config.proxy}`);
   lines.push('')
+  lines.push(`; 调试代理 YouTube 链接的相关问题`);
+  lines.push(`debug-fetch = ${config.debugFetch ? 'true' : 'false'}`);
+  lines.push('')
   lines.push("[ytdlp]");
   if (config.ytdlp != './yt-dlp.exe') {
     lines.push(`; 如果软件相同目录下找不到 yt-dlp.exe，这里设置 yt-dlp 的路径`);
@@ -87,7 +93,7 @@ export const saveConfig = async () => {
   lines.push(`keep-config = ${config.ytdlpKeepConfig ? 'true' : 'false'}`);
   lines.push('')
 
-  await fsP.writeFile('./config.ini', lines.join('\n'));
+  await fsP.writeFile(config.configPath, lines.join('\n'));
 }
 
 export const checkYtdlpVersion = async (executable: string) => {

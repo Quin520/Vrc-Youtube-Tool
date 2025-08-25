@@ -21,6 +21,13 @@ export default new Elysia()
       const stdout = await $`${config.ytdlp} ${getYtdlpArgs()} ${body.args}`.text()
       log.log(stdout)
       if (stdout.startsWith('http')) {
+        const find = videoLinks.findIndex(v => v === stdout);
+        if (find !== -1) {
+          return {
+            text: `http://${config.hostsOk ? 'localhost.youtube.com' : 'localhost'}:${config.port}/video/${find}`,
+            code: 0,
+          };
+        }
         const index = videoLinks.length;
         videoLinks.push(stdout);
         return {
@@ -34,7 +41,7 @@ export default new Elysia()
         };
       }
     } catch (e: any) {
-      log.errorWithError("视频解析失败", e);
+      log.withField('stdout', e.stdout).withField('stderr', e.stderr).errorWithError("视频解析失败", e);
       return {
         code: e.exitCode || 1,
       }
@@ -51,7 +58,7 @@ export default new Elysia()
   .get('/video/:id', ({ params, request, set }) => {
     return fetch(videoLinks[params.id]!, {
       proxy: `http://${config.proxy}`,
-      verbose: true,
+      verbose: config.debugFetch,
       // tls: { rejectUnauthorized: false },
     })
   }, {

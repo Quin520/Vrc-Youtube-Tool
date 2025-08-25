@@ -8,6 +8,8 @@ const config = {
   exitWithVrc: false,
   hostsOk: false,
   port: 7919,
+  debugFetch: false,
+  configPath: './config.ini',
 }
 
 export default config
