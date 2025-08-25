@@ -16,7 +16,7 @@ if (Bun.argv.includes('--set-hosts')) {
 
 const log = createLogg('主模块').useGlobalConfig()
 
-setGlobalLogLevel(LogLevel.Debug)
+setGlobalLogLevel(LogLevel.Log)
 setGlobalFormat(Format.Pretty)
 setGlobalTimeFormatter(date => format(date, "yyyy-MM-dd HH:mm:ss"))
 
