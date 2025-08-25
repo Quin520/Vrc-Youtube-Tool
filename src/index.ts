@@ -20,6 +20,8 @@ setGlobalLogLevel(LogLevel.Log)
 setGlobalFormat(Format.Pretty)
 setGlobalTimeFormatter(date => format(date, "yyyy-MM-dd HH:mm:ss"))
 
+process.title='VRChat yt-dlp 修复服务'
+
 if (!await loadConfig()) {
   await initWizard()
 }
@@ -33,5 +35,5 @@ if (config.exitWithVrc) {
 server.listen(config.port);
 await stubReplace()
 
-log.log(`启动完成！`);
+log.log(`启动完成，玩的开心！GitHub 地址: https://github.com/clansty/yt-dlp-VRC`);
 await menu()

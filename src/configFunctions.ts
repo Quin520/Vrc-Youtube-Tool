@@ -52,6 +52,9 @@ export const loadConfig = async () => {
     if (ini.ytdlp?.['keep-config']) {
       config.ytdlpKeepConfig = ['true', '1', 'yes', 'on'].includes(ini.ytdlp['keep-config'].toLowerCase());
     }
+    if (ini.ytdlp?.['stream-mode'] && ['mp4', 'hls-direct', 'hls-mux'].includes(ini.ytdlp['stream-mode'])) {
+      config.streamMode = ini.ytdlp['stream-mode'].toLowerCase();
+    }
     return true
   } catch (e) {
     log.errorWithError("解析配置文件失败，考虑删除重建一个？", e);
@@ -87,6 +90,12 @@ export const saveConfig = async () => {
   lines.push('')
   lines.push(`; yt-dlp 也可以自动从浏览器里读取 Cookies，但是这需要浏览器的 Cookies 为未加密状态。所以一些浏览器可能需要自行进行一些复杂的设置。如果要使用的话，这里可以设置浏览器的类型`);
   lines.push(`cookies-from-browser = ${config.ytdlpCookiesBrowser || ''}`);
+  lines.push('')
+  lines.push(`; 由于 YouTube 只提供较低分辨率的 MP4 格式音画视频流，想要更高分辨率的视频可能只能使用 HLS 流了。所以我们提供了三种模式`);
+  lines.push(`; mp4: 只使用 MP4 格式的流，最高可能只支持 480P，优点是兼容性好，缺点是分辨率低`);
+  lines.push(`; hls-direct: 使用 HLS 格式，直通分片列表给 VRChat，应该需要使用 AVPro 播放器才能播放`);
+  lines.push(`; hls-mux: 使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，可能会有问题`);
+  lines.push(`stream-mode = ${config.streamMode || 'mp4'}`);
   lines.push('')
   lines.push(`; 如果你自行配置了 yt-dlp 的 config 文件，不需要本程序再附加任何参数了，可以设置 keep-config 为 true，那上面 Cookies 的设置和代理就不会生效`);
   lines.push(`; 就算这里设置了 false，config 文件里的其他设置还是有效的`);

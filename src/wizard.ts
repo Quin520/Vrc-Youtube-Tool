@@ -3,6 +3,7 @@ import config, { getYtdlpArgs } from "./config.ts";
 import prompts from "prompts";
 import { checkYtdlpVersion, saveConfig } from "./configFunctions.ts";
 import { $ } from "bun";
+import { resolveVideoLink } from "./resolveService.ts";
 
 const log = createLogg('设置向导').useGlobalConfig()
 
@@ -28,7 +29,7 @@ export const initWizard = async () => {
       type: 'text',
       name: 'addr',
       message: `请输入要使用的代理地址`,
-      initial: '127.0.0.1:7890',
+      initial: config.proxy,
     }])
     const ok = answ.addr.includes(':');
     if (ok) {
@@ -48,6 +49,7 @@ export const initWizard = async () => {
       { title: '从浏览器获取', value: 'browser' },
       { title: '摆烂', value: 'ignore' }
     ],
+    initial: config.ytdlpCookiesBrowser ? 1 : 0
   }])
 
   switch (answ.cookiesWay) {
@@ -56,7 +58,7 @@ export const initWizard = async () => {
         type: 'text',
         name: 'browser',
         message: `请输入浏览器名称，文档上说支持的浏览器有 brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale`,
-        initial: 'chrome',
+        initial: config.ytdlpCookiesBrowser || 'chrome',
       }])
       config.ytdlpCookiesBrowser = answ.browser
       break;
@@ -67,7 +69,7 @@ export const initWizard = async () => {
           type: 'text',
           name: 'path',
           message: `请输入 Cookies.txt 的路径`,
-          initial: './cookies.txt',
+          initial: config.ytdlpCookiesTxt || './cookies.txt',
         }])
 
         const text = await Bun.file(answ.path).text();
@@ -83,21 +85,33 @@ export const initWizard = async () => {
     }
   }
 
+  const streamMode = await prompts([{
+    type: 'select',
+    name: 'streamMode',
+    message: '由于 YouTube 只提供较低分辨率的 MP4，想要更高分辨率可能只能使用 HLS 流了。请选择一种处理方式',
+    choices: [
+      { title: '只使用 MP4 格式的流，最高可能只支持 480P，优点是兼容性好，缺点是分辨率低', value: 'mp4' },
+      { title: '使用 HLS 格式，直通分片列表给 VRChat，应该需要使用 AVPro 播放器才能播放', value: 'hls-direct' },
+      { title: '使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，可能会有问题', value: 'hls-mux' }
+    ],
+    initial: ['mp4', 'hls-direct', 'hls-mux'].indexOf(config.streamMode || 'mp4')
+  }])
+  config.streamMode = streamMode.streamMode;
+
   const exitWithVrc = await prompts({
     type: 'toggle',
     name: 'value',
     message: '要在检测到 VRChat 结束之后自动退出本程序嘛？',
-    initial: false,
+    initial: config.exitWithVrc,
     active: '好',
     inactive: '不要'
   });
   config.exitWithVrc = exitWithVrc.value;
 
 
-
   await saveConfig()
   log.log("配置已保存到 config.ini，可以直接打开修改（记得保存，改完要重启）")
-  
+
   const isCheck = await prompts({
     type: 'toggle',
     name: 'value',
@@ -106,11 +120,11 @@ export const initWizard = async () => {
     active: '要的',
     inactive: '不要'
   });
-  
+
   if (isCheck.value) {
     const ok = await testParse();
-    if (ok) {
-      log.log("解析测试通过，配置完成");
+    if (ok.code === 0) {
+      log.log("解析测试通过，配置完成，你可以试试以下地址在浏览器 / VLC 里能不能播放: " + ok.text);
     } else {
       log.error("解析测试失败，请检查配置是否正确，看你了");
     }
@@ -122,12 +136,5 @@ export const initWizard = async () => {
 export const testParse = async () => {
   const example = 'https://www.youtube.com/watch?v=-PTe8zkYt9A';
   log.log('正在解析，请稍候…')
-  try {
-    const stdout = await $`${config.ytdlp} ${getYtdlpArgs()} --no-cache-dir --rm-cache-dir -f '(mp4/best)[height<=?1080][height>=?64][width>=?64]' --get-url ${example}`.text()
-    log.log('解析结果: ' + stdout)
-    return stdout.startsWith('http');
-  } catch (e: any) {
-    log.withField('stdout', e.stdout).withField('stderr', e.stderr).errorWithError("解析失败", e);
-    return false;
-  }
+  return await resolveVideoLink(example);
 }

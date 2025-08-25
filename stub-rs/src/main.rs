@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let res = client
         .post("http://127.0.0.1:7919/fetch-link")
         .json(&serde_json::json!({
-            "args": args,
+            "url": video_url,
         }))
         .send()
         .await?;

@@ -1,5 +1,5 @@
 import prompts from "prompts";
-import { testParse } from "./wizard.ts";
+import { initWizard, testParse } from "./wizard.ts";
 import { saveConfig } from "./configFunctions.ts";
 import { createLogg } from "@guiiai/logg";
 import { $ } from "bun";
@@ -16,6 +16,7 @@ export default async () => {
       choices: [
         { title: '选我也没有用', value: 'placeholder' },
         { title: '测试解析视频', value: 'test' },
+        { title: '重新走一遍设置向导', value: 'wizard' },
         { title: '重新保存配置文件（恢复注释）', value: 'saveConfig' },
         { title: '打开配置文件编辑', value: 'openConfig' },
         { title: '退出', value: 'exit' }
@@ -25,7 +26,16 @@ export default async () => {
 
     switch (answ.value) {
       case 'test': {
-        await testParse();
+        const res = await testParse();
+        if (res.code === 0) {
+          log.log("解析成功，你可以试试以下地址在浏览器 / VLC 里能不能播放: " + res.text);
+        } else {
+          log.error("解析失败");
+        }
+        break
+      }
+      case 'wizard': {
+        await initWizard();
         break
       }
       case 'saveConfig': {

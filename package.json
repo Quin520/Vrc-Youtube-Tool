@@ -7,7 +7,7 @@
     "start": "bun run src/index.ts",
     "start:stub": "bun run stub/index.ts",
     "build:stub": "bun build stub/index.ts --compile --minify --outfile stub.exe",
-    "build:main": "bun build src/index.ts --compile --minify --sourcemap --outfile 'VRChat yt-dlp Fix.exe'"
+    "build:main": "bun build src/index.ts --compile --minify --sourcemap --outfile 'main.exe'"
   },
   "devDependencies": {
     "@types/bun": "latest"
