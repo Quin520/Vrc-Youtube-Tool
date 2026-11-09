@@ -37,3 +37,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 config.ini
 *.7z
 *.pdf
+
+# Local credentials, backups, and release staging must not be committed.
+*.txt
+!licenses/*.txt
+*.log
+*.zip
+backup*/
+.publish/
+.work/
+.local/
