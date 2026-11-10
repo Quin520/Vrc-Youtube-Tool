@@ -17,7 +17,6 @@ export const loadConfig = async () => {
   const iniContent = await fsP.readFile(config.configPath, 'utf-8');
   try {
     const ini = parse(iniContent) as any;
-    log.withFields(ini).debug('读取配置文件');
     if (!ini.general?.proxy) {
       log.warn("配置文件中未设置代理地址，请检查 config.ini 的设置，实在不行就删了重建吧。按回车退出");
       for await (const chunk of Bun.stdin.stream()) {
@@ -52,8 +51,20 @@ export const loadConfig = async () => {
     if (ini.ytdlp?.['keep-config']) {
       config.ytdlpKeepConfig = ['true', '1', 'yes', 'on'].includes(ini.ytdlp['keep-config'].toLowerCase());
     }
-    if (ini.ytdlp?.['stream-mode'] && ['mp4', 'hls-direct', 'hls-mux'].includes(ini.ytdlp['stream-mode'])) {
+    if (ini.ytdlp?.['stream-mode'] && ['lossless', 'lossless-compatible', 'mp4', 'hls-direct', 'hls-mux'].includes(ini.ytdlp['stream-mode'])) {
       config.streamMode = ini.ytdlp['stream-mode'].toLowerCase();
+    }
+    if (ini.ytdlp?.['ffmpeg-path']) config.ffmpeg = ini.ytdlp['ffmpeg-path'];
+    if (ini.ytdlp?.['cache-dir']) config.cacheDir = ini.ytdlp['cache-dir'];
+    if (ini.ytdlp?.['cache-max-gb']) {
+      const gb = Number(ini.ytdlp['cache-max-gb']);
+      if (!Number.isFinite(gb) || gb <= 0) throw new Error('cache-max-gb 必须大于 0');
+      config.cacheMaxBytes = Math.floor(gb * 1024 ** 3);
+    }
+    if (ini.ytdlp?.['prepare-timeout-minutes']) {
+      const minutes = Number(ini.ytdlp['prepare-timeout-minutes']);
+      if (!Number.isFinite(minutes) || minutes <= 0) throw new Error('prepare-timeout-minutes 必须大于 0');
+      config.prepareTimeoutMs = minutes * 60_000;
     }
     return true
   } catch (e) {
@@ -91,13 +102,17 @@ export const saveConfig = async () => {
   lines.push(`; yt-dlp 也可以自动从浏览器里读取 Cookies，但是这需要浏览器的 Cookies 为未加密状态。所以一些浏览器可能需要自行进行一些复杂的设置。如果要使用的话，这里可以设置浏览器的类型`);
   lines.push(`cookies-from-browser = ${config.ytdlpCookiesBrowser || ''}`);
   lines.push('')
-  lines.push(`; 由于 YouTube 只提供较低分辨率的 MP4 格式音画视频流，想要更高分辨率的视频可能只能使用 HLS 流了。所以我们提供了三种模式`);
-  lines.push(`; mp4: 只使用 MP4 格式的流，最高可能只支持 480P，优点是兼容性好，缺点是分辨率低`);
-  lines.push(`; hls-direct: 使用 HLS 格式，直通分片列表给 VRChat，应该需要使用 AVPro 播放器才能播放`);
-  lines.push(`; hls-mux: 使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，可能会有问题`);
-  lines.push(`stream-mode = ${config.streamMode || 'mp4'}`);
+  lines.push(`; lossless: 最高可用源画质，无损封装为可拖动进度的 MP4；首次需要下载缓存，编码兼容性取决于播放器`);
+  lines.push(`; lossless-compatible: 选择源站现有的 H.264/AAC，再无损封装；清晰度可能低于源站最高格式`);
+  lines.push(`; mp4 / hls-direct: 旧版单流直通模式，可能只有低分辨率；hls-direct 也用于直播`);
+  lines.push(`; 旧版 hls-mux 现在等同 lossless；所有模式均不进行重新编码`);
+  lines.push(`stream-mode = ${config.streamMode || 'lossless'}`);
+  lines.push(`ffmpeg-path = ${config.ffmpeg}`);
+  lines.push(`cache-dir = ${config.cacheDir}`);
+  lines.push(`cache-max-gb = ${config.cacheMaxBytes / 1024 ** 3}`);
+  lines.push(`prepare-timeout-minutes = ${config.prepareTimeoutMs / 60_000}`);
   lines.push('')
-  lines.push(`; 如果你自行配置了 yt-dlp 的 config 文件，不需要本程序再附加任何参数了，可以设置 keep-config 为 true，那上面 Cookies 的设置和代理就不会生效`);
+  lines.push(`; keep-config=true 时使用 yt-dlp 配置中的 Cookies 和解析代理；格式选择和 JSON 输出仍由工具管理`);
   lines.push(`; 就算这里设置了 false，config 文件里的其他设置还是有效的`);
   lines.push(`keep-config = ${config.ytdlpKeepConfig ? 'true' : 'false'}`);
   lines.push('')

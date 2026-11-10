@@ -4,6 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
     "start": "bun run src/index.ts",
     "start:stub": "bun run stub/index.ts",
     "build:stub": "bun build stub/index.ts --compile --minify --outfile stub.exe",

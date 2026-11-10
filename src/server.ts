@@ -1,61 +1,27 @@
-import { Elysia, t } from "elysia";
-import { $ } from "bun";
-import config, { getYtdlpArgs } from "./config.ts";
-import { createLogg } from "@guiiai/logg";
-import { getProxyUrl, getSavedUrlByIndex, resolveVideoLink, streamHls } from "./resolveService.ts";
+import { Elysia, t } from 'elysia';
+import { getResource, resolveVideoLink } from './resolveService.ts';
+import { relayResource } from './relay.ts';
+import { cacheStatus } from './lossless.ts';
+import { safeError } from './process.ts';
 
-const log = createLogg('HTTP 服务').useGlobalConfig()
+const videoResponse = async ({ params, request }: { params: { id: string; name: string }; request: Request }) => {
+  const resource = getResource(params.id);
+  if (!resource) return new Response('链接已过期，请重新解析视频', { status: 404 });
+  try { return await relayResource(resource, request); }
+  catch (error) { return new Response(safeError(error), { status: 502 }); }
+};
 
 export default new Elysia()
-  .get('/', 'Hello')
-  .post('/fetch-link', async ({ body }) => {
-    log.withFields(body).log("收到视频解析请求")
-    return await resolveVideoLink(body.url)
-  }, {
-    body: t.Object({
-      url: t.String(),
-    }),
-    response: t.Object({
-      text: t.Optional(t.String()),
-      code: t.Number(),
-    })
+  .onRequest(({ request }) => {
+    const host = new URL(request.url).hostname;
+    if (!['127.0.0.1', 'localhost', 'localhost.youtube.com'].includes(host)) return new Response('Invalid host', { status: 403 });
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== new URL(request.url).origin) return new Response('Cross-origin request denied', { status: 403 });
   })
-  .get('/video/:id', async ({ params, request, set }) => {
-    if (!getSavedUrlByIndex(params.id)) return
-    if (config.streamMode === 'hls-mux') {
-      set.headers["content-type"] = 'video/mp4';
-      return streamHls(params.id);
-    }
-    const url = getSavedUrlByIndex(params.id)!
-    if (url.endsWith('.m3u8')) {
-      const req = await fetch(url, {
-        proxy: `http://${config.proxy}`,
-        verbose: config.debugFetch,
-      });
-      const text = await req.text();
-      const newText = text.split('\n').map(line => {
-        if (line && !line.startsWith('#')) {
-          if (line.startsWith('http')) {
-            return getProxyUrl(line);
-          }
-        } else {
-          return line;
-        }
-      }).join('\n');
-      set.headers['content-type'] = 'application/vnd.apple.mpegurl';
-      return newText;
-    }
-    const res = await fetch(url, {
-      proxy: `http://${config.proxy}`,
-      verbose: config.debugFetch,
-      // tls: { rejectUnauthorized: false },
-    })
-    if (url.endsWith('.ts')) {
-      return await res.arrayBuffer();
-    }
-    return res;
-  }, {
-    params: t.Object({
-      id: t.Integer()
-    })
+  .get('/', 'VRChat YouTube relay')
+  .get('/status', () => ({ jobs: cacheStatus() }))
+  .post('/fetch-link', ({ body }) => resolveVideoLink(body.url), {
+    body: t.Object({ url: t.String({ maxLength: 2048 }) }),
   })
+  .get('/video/:id/:name', videoResponse)
+  .head('/video/:id/:name', videoResponse);

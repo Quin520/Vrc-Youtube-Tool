@@ -1,8 +1,7 @@
 import { createLogg } from "@guiiai/logg";
-import config, { getYtdlpArgs } from "./config.ts";
+import config from "./config.ts";
 import prompts from "prompts";
 import { checkYtdlpVersion, saveConfig } from "./configFunctions.ts";
-import { $ } from "bun";
 import { resolveVideoLink } from "./resolveService.ts";
 
 const log = createLogg('设置向导').useGlobalConfig()
@@ -88,13 +87,14 @@ export const initWizard = async () => {
   const streamMode = await prompts([{
     type: 'select',
     name: 'streamMode',
-    message: '由于 YouTube 只提供较低分辨率的 MP4，想要更高分辨率可能只能使用 HLS 流了。请选择一种处理方式',
+    message: '选择画质与播放方式（均不重新编码；原始画质首次播放需要等待缓存）',
     choices: [
-      { title: '只使用 MP4 格式的流，最高可能只支持 480P，优点是兼容性好，缺点是分辨率低', value: 'mp4' },
-      { title: '使用 HLS 格式，直通分片列表给 VRChat，应该需要使用 AVPro 播放器才能播放', value: 'hls-direct' },
-      { title: '使用 HLS 格式，但是本程序帮你把音频和视频流混流成一个 MP4 文件，再提供给 VRChat。实验性功能，很可能用不了', value: 'hls-mux' }
+      { title: '原始画质：最高可用音视频，无损封装；需要 FFmpeg，播放器须支持源编码', value: 'lossless' },
+      { title: '兼容无损：选择现有 H.264/AAC，适合更多地图；源站最高画质可能更高', value: 'lossless-compatible' },
+      { title: '旧版 MP4 单流直通：加载快，但清晰度可能较低', value: 'mp4' },
+      { title: '单流 / HLS 直通：用于直播，需要地图播放器支持', value: 'hls-direct' }
     ],
-    initial: ['mp4', 'hls-direct', 'hls-mux'].indexOf(config.streamMode || 'mp4')
+    initial: Math.max(0, ['lossless', 'lossless-compatible', 'mp4', 'hls-direct'].indexOf(config.streamMode))
   }])
   config.streamMode = streamMode.streamMode;
 
@@ -124,7 +124,7 @@ export const initWizard = async () => {
   if (isCheck.value) {
     const ok = await testParse();
     if (ok.code === 0) {
-      log.log("解析测试通过，配置完成，你可以试试以下地址在浏览器 / VLC 里能不能播放: " + ok.text);
+      log.log("格式解析通过。无损模式正在准备缓存，可在 VLC 或地图播放器测试: " + ok.text);
     } else {
       log.error("解析测试失败，请检查配置是否正确，看你了");
     }

@@ -8,6 +8,11 @@ import { initWizard } from "./wizard.ts";
 import menu from "./menu.ts";
 import watchProcess from "./watchProcess.ts";
 import { addHosts, checkModifyHosts } from "./hosts.ts";
+import { stopChildren } from './process.ts';
+
+const configArg = Bun.argv.indexOf('--config');
+if (configArg !== -1 && Bun.argv[configArg + 1]) config.configPath = Bun.argv[configArg + 1]!;
+const serveOnly = Bun.argv.includes('--serve-only');
 
 if (Bun.argv.includes('--set-hosts')) {
   await addHosts();
@@ -26,14 +31,15 @@ if (!await loadConfig()) {
   await initWizard()
 }
 
-await checkModifyHosts()
+if (!serveOnly) await checkModifyHosts()
 
-if (config.exitWithVrc) {
+if (!serveOnly && config.exitWithVrc) {
   watchProcess()
 }
 
-server.listen(config.port);
-await stubReplace()
+server.listen({ hostname: '127.0.0.1', port: config.port, idleTimeout: 255 });
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopChildren(); process.exit(0); });
+if (!serveOnly) await stubReplace()
 
-log.log(`启动完成，玩的开心！GitHub 地址: https://github.com/clansty/yt-dlp-VRC`);
-await menu()
+log.log(`启动完成，GitHub 地址: https://github.com/Quin520/Vrc-Youtube-Tool`);
+if (!serveOnly && !Bun.argv.includes('--no-menu')) await menu()
