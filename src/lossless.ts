@@ -20,11 +20,14 @@ export interface LosslessJob {
 const jobs = new Map<string, LosslessJob>();
 let queue: Promise<unknown> = Promise.resolve();
 let ffmpegChecked = '';
+let boundedRequests = false;
 
 export async function checkFfmpeg() {
   if (ffmpegChecked === config.ffmpeg) return;
   try { await runProcess(config.ffmpeg, ['-version'], { timeoutMs: 5000 }); }
   catch { throw new Error('无损模式需要 ffmpeg.exe；请放在工具目录，或设置 [ytdlp] ffmpeg-path'); }
+  const httpOptions = await runProcess(config.ffmpeg, ['-hide_banner', '-h', 'protocol=http'], { timeoutMs: 5000 }).catch(() => '');
+  boundedRequests = /-request_size\s/.test(httpOptions) && /-initial_request_size\s/.test(httpOptions);
   ffmpegChecked = config.ffmpeg;
 }
 
@@ -33,6 +36,11 @@ export function buildRemuxArgs(info: MediaInfo, output: string) {
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y'];
   for (const format of formats) {
     args.push('-rw_timeout', '15000000', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+    // YouTube may throttle an unbounded HTTP request. FFmpeg 8.1+ can read the same
+    // bytes in bounded ranges; older builds retain their original download path.
+    if (boundedRequests && ['http', 'https', undefined].includes(format.protocol)) {
+      args.push('-request_size', '8388608', '-initial_request_size', '1048576', '-multiple_requests', '1');
+    }
     const proxy = proxyUrl();
     if (proxy) args.push('-http_proxy', proxy);
     const headers = { ...info.http_headers, ...format.http_headers };

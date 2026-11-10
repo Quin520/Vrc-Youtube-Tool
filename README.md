@@ -10,7 +10,7 @@
 
 1. 在 [Releases](https://github.com/Quin520/Vrc-Youtube-Tool/releases/latest) 下载 Windows ZIP，完整解压。GitHub 的 Source code ZIP 不包含可执行文件。
 2. 安装 [Node.js](https://nodejs.org/) **22 或更新版本**，确保加入 PATH；安装后重新打开启动器。
-3. 从 [FFmpeg 官网指向的 Windows 构建](https://ffmpeg.org/download.html#build-windows)下载 FFmpeg，将 `ffmpeg.exe` 放在工具目录。发行包不包含这一依赖；可在配置中用 `ffmpeg-path` 指定其他位置。
+3. 从 [FFmpeg 官网指向的 Windows 构建](https://ffmpeg.org/download.html#build-windows)下载 FFmpeg，将 `ffmpeg.exe` 放在工具目录，建议 **8.1 或更新版本**。工具会检测 HTTP 分块请求能力，避免部分 YouTube 直链的大请求限速。发行包不包含这一依赖；可在配置中用 `ffmpeg-path` 指定其他位置。
 4. 开启 Clash、Bitz Net 等客户端，记下本地 **HTTP / 混合代理端口**，例如 `127.0.0.1:7890`，以自己的客户端为准。
 5. 双击 `Start.cmd`，按向导填写代理地址：**只填 `IP:端口`，不要填订阅链接**。需要登录时使用自己的 Cookies 文件。
 6. 运行“测试解析视频”，留意日志中的分辨率、帧率、编码和“无损封装完成”。首次配置 Hosts 后，退出并重新打开工具一次，再启动 VRChat；播放时保持工具和代理客户端运行。
