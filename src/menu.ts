@@ -4,6 +4,7 @@ import { saveConfig } from "./configFunctions.ts";
 import { createLogg } from "@guiiai/logg";
 import { $ } from "bun";
 import config from "./config.ts";
+import { cancelAllJobs } from './lossless.ts';
 
 const log = createLogg('菜单').useGlobalConfig()
 
@@ -14,7 +15,7 @@ export default async () => {
       name: 'value',
       message: '我是菜单',
       choices: [
-        { title: '选我也没有用', value: 'placeholder' },
+        { title: '打开任务面板（进度 / 取消 / 重试）', value: 'dashboard' },
         { title: '测试解析视频', value: 'test' },
         { title: '重新走一遍设置向导', value: 'wizard' },
         { title: '重新保存配置文件（恢复注释）', value: 'saveConfig' },
@@ -25,6 +26,10 @@ export default async () => {
     })
 
     switch (answ.value) {
+      case 'dashboard': {
+        await $`cmd /c start ${`http://127.0.0.1:${config.port}/`}`;
+        break;
+      }
       case 'test': {
         const res = await testParse();
         if (res.code === 0) {
@@ -49,6 +54,7 @@ export default async () => {
         break
       }
       case 'exit': {
+        await cancelAllJobs();
         process.exit();
       }
     }

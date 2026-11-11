@@ -1,6 +1,8 @@
 import * as fs from 'node:fs/promises';
+import path from 'node:path';
 import config, { proxyUrl } from './config.ts';
 import { getProxyUrl, type Resource } from './resolveService.ts';
+import { hlsAsset } from './cache.ts';
 
 export function rewritePlaylist(text: string, base: string, headers: Record<string, string> = {}) {
   const rewrite = (uri: string) => {
@@ -24,12 +26,12 @@ export function parseRange(value: string, size: number): [number, number] | unde
   return [start, end];
 }
 
-export async function serveFile(file: string, request: Request, etag: string) {
+export async function serveFile(file: string, request: Request, etag: string, contentType = 'video/mp4') {
   const stat = await fs.stat(file);
   // Touch access time, keeping modification time and validators stable.
   await fs.utimes(file, new Date(), stat.mtime).catch(() => {});
   const headers = new Headers({
-    'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes', 'ETag': `"${etag}"`,
+    'Content-Type': contentType, 'Accept-Ranges': 'bytes', 'ETag': `"${etag}"`,
     'Last-Modified': stat.mtime.toUTCString(), 'Cache-Control': 'private, max-age=3600',
   });
   // Advertise a closing connection explicitly so media clients reopen it for seeks.
@@ -49,12 +51,38 @@ export async function serveFile(file: string, request: Request, etag: string) {
   return new Response(request.method === 'HEAD' ? null : Bun.file(file), { headers });
 }
 
+function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error('播放请求已断开'));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new Error('播放请求已断开'));
+    signal.addEventListener('abort', abort, { once: true });
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 export async function relayResource(resource: Resource, request: Request): Promise<Response> {
   if (resource.kind === 'file') {
-    resource.job.lastUsed = Date.now();
-    const file = await resource.job.ready;
+    const job = resource.job;
+    job.lastUsed = Date.now();
+    if (['failed', 'cancelled', 'cancelling', 'evicted'].includes(job.state)) throw new Error(job.error || '任务已取消');
+    const file = await waitFor(job.artifact.hls ? job.playable : job.ready, request.signal);
+    if (!job.isPlayable) throw new Error(job.error || '任务已取消');
     if (!await Bun.file(file).exists()) throw new Error('缓存已清理，请重新解析视频');
-    return serveFile(file, request, resource.job.key);
+    if (!job.artifact.hls) return serveFile(file, request, job.key);
+    const name = new URL(request.url).pathname.split('/').pop()!;
+    if (name === 'media.m3u8') {
+      const playlist = await fs.readFile(file, 'utf8');
+      const stat = await fs.stat(file);
+      await fs.utimes(file, new Date(), stat.mtime).catch(() => {});
+      const headers = new Headers({ 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store',
+        'Content-Length': String(Buffer.byteLength(playlist)) });
+      if (request.headers.get('Connection')?.toLowerCase() === 'close') headers.set('Connection', 'close');
+      return new Response(request.method === 'HEAD' ? null : playlist, { headers });
+    }
+    if (!hlsAsset.test(name)) return new Response('没有此分片', { status: 404 });
+    const asset = path.join(path.dirname(file), name);
+    if (!await Bun.file(asset).exists()) return new Response('分片尚未生成或已清理', { status: 404 });
+    return serveFile(asset, request, `${job.key}-${name}`, name.endsWith('.m4s') ? 'video/iso.segment' : 'video/mp4');
   }
   const headers = new Headers(resource.headers);
   headers.set('Accept-Encoding', 'identity');

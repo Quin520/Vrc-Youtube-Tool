@@ -2,7 +2,7 @@ import * as fsP from "fs/promises";
 import { $ } from "bun";
 import { createLogg } from "@guiiai/logg";
 import { parse } from "@std/ini/parse";
-import config from "./config.ts";
+import config, { isStreamMode } from "./config.ts";
 
 const log = createLogg('配置').useGlobalConfig()
 
@@ -51,8 +51,10 @@ export const loadConfig = async () => {
     if (ini.ytdlp?.['keep-config']) {
       config.ytdlpKeepConfig = ['true', '1', 'yes', 'on'].includes(ini.ytdlp['keep-config'].toLowerCase());
     }
-    if (ini.ytdlp?.['stream-mode'] && ['lossless', 'lossless-compatible', 'mp4', 'hls-direct', 'hls-mux'].includes(ini.ytdlp['stream-mode'])) {
-      config.streamMode = ini.ytdlp['stream-mode'].toLowerCase();
+    if (ini.ytdlp?.['stream-mode']) {
+      const mode = ini.ytdlp['stream-mode'].toLowerCase();
+      if (!isStreamMode(mode)) throw new Error('stream-mode 不是支持的播放模式');
+      config.streamMode = mode;
     }
     if (ini.ytdlp?.['ffmpeg-path']) config.ffmpeg = ini.ytdlp['ffmpeg-path'];
     if (ini.ytdlp?.['cache-dir']) config.cacheDir = ini.ytdlp['cache-dir'];
@@ -104,6 +106,8 @@ export const saveConfig = async () => {
   lines.push('')
   lines.push(`; lossless: 最高可用源画质，无损封装为可拖动进度的 MP4；首次需要下载缓存，编码兼容性取决于播放器`);
   lines.push(`; lossless-compatible: 选择源站现有的 H.264/AAC，再无损封装；清晰度可能低于源站最高格式`);
+  lines.push(`; lossless-hls / lossless-hls-compatible: 上述两种画质的 HLS 分片模式（实验），首片完成后可播放`);
+  lines.push(`; HLS 需要地图播放器支持；准备期间只能跳转到已生成的位置，完成后可跳转整段`);
   lines.push(`; mp4 / hls-direct: 旧版单流直通模式，可能只有低分辨率；hls-direct 也用于直播`);
   lines.push(`; 旧版 hls-mux 现在等同 lossless；所有模式均不进行重新编码`);
   lines.push(`stream-mode = ${config.streamMode || 'lossless'}`);

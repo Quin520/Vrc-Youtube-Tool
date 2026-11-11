@@ -17,8 +17,11 @@ export function runProcess(command: string, args: string[], options: {
   timeoutMs?: number;
   maxOutput?: number;
   signal?: AbortSignal;
+  onStdout?: (chunk: string) => void;
+  captureOutput?: boolean;
 } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) { reject(new Error('处理已取消')); return; }
     const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     children.add(child);
     const stdout: Buffer[] = [];
@@ -34,9 +37,13 @@ export function runProcess(command: string, args: string[], options: {
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
     child.stdout.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > (options.maxOutput ?? 32 * 1024 ** 2)) stop('解析输出超过大小限制');
-      else stdout.push(chunk);
+      try { options.onStdout?.(chunk.toString('utf8')); }
+      catch { stop('无法读取处理进度'); }
+      if (options.captureOutput !== false) {
+        size += chunk.length;
+        if (size > (options.maxOutput ?? 32 * 1024 ** 2)) stop('解析输出超过大小限制');
+        else stdout.push(chunk);
+      }
     });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8000); });
     child.once('error', error => { failure = error; });

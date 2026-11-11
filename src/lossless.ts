@@ -1,161 +1,227 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLogg } from '@guiiai/logg';
-import config, { proxyUrl } from './config.ts';
-import { qualitySummary, selectedFormats, type MediaInfo } from './media.ts';
+import config, { isHlsMode, proxyUrl, type StreamMode } from './config.ts';
+import { qualitySummary, compatibilityNotes, selectedFormats, type MediaInfo } from './media.ts';
 import { runProcess, safeError } from './process.ts';
+import { buildRemuxArgs, checkFfmpeg, progressReader } from './ffmpeg.ts';
+import { artifactFor, artifactBytes, discardPartial, isComplete, playlistReady, trimCache, type Artifact } from './cache.ts';
 
-const log = createLogg('无损封装').useGlobalConfig();
+const log = createLogg('无损播放任务').useGlobalConfig();
+type State = 'queued' | 'preparing' | 'cancelling' | 'cancelled' | 'ready' | 'failed' | 'evicted';
 export interface LosslessJob {
+  id: string;
   key: string;
   file: string;
+  artifact: Artifact;
+  mode: StreamMode;
   info: MediaInfo;
-  state: 'queued' | 'preparing' | 'ready' | 'failed';
+  state: State;
   bytes: number;
+  mediaSeconds: number;
+  availableSeconds: number;
+  speed?: number;
   error?: string;
   lastUsed: number;
+  isPlayable: boolean;
   ready: Promise<string>;
+  playable: Promise<string>;
 }
-const jobs = new Map<string, LosslessJob>();
+function deferred() {
+  let resolve!: (value: string) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<string>((yes, no) => { resolve = yes; reject = no; });
+  void promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+interface ManagedJob extends LosslessJob {
+  abort: AbortController;
+  done: ReturnType<typeof deferred>;
+  first: ReturnType<typeof deferred>;
+  settings: { ffmpeg: string; proxy?: string; timeoutMs: number; maxBytes: number; boundedRequests: boolean };
+}
+const jobs = new Map<string, ManagedJob>();
+const latest = new Map<string, string>();
+const creating = new Map<string, Promise<LosslessJob>>();
 let queue: Promise<unknown> = Promise.resolve();
-let ffmpegChecked = '';
-let boundedRequests = false;
+const active = (job: LosslessJob) => ['queued', 'preparing', 'cancelling'].includes(job.state);
+const protectedFiles = () => new Set([...jobs.values()].filter(job => active(job) || Date.now() - job.lastUsed < 120_000).map(job => job.file));
 
-export async function checkFfmpeg() {
-  if (ffmpegChecked === config.ffmpeg) return;
-  try { await runProcess(config.ffmpeg, ['-version'], { timeoutMs: 5000 }); }
-  catch { throw new Error('无损模式需要 ffmpeg.exe；请放在工具目录，或设置 [ytdlp] ffmpeg-path'); }
-  const httpOptions = await runProcess(config.ffmpeg, ['-hide_banner', '-h', 'protocol=http'], { timeoutMs: 5000 }).catch(() => '');
-  boundedRequests = /-request_size\s/.test(httpOptions) && /-initial_request_size\s/.test(httpOptions);
-  ffmpegChecked = config.ffmpeg;
-}
-
-export function buildRemuxArgs(info: MediaInfo, output: string) {
-  const formats = selectedFormats(info);
-  const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y'];
-  for (const format of formats) {
-    args.push('-rw_timeout', '15000000', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
-    // YouTube may throttle an unbounded HTTP request. FFmpeg 8.1+ can read the same
-    // bytes in bounded ranges; older builds retain their original download path.
-    if (boundedRequests && ['http', 'https', undefined].includes(format.protocol)) {
-      args.push('-request_size', '8388608', '-initial_request_size', '1048576', '-multiple_requests', '1');
+async function maintainCache(root: string, maxBytes: number, reserve = 0, clear = false) {
+  const result = await trimCache(root, maxBytes, reserve, protectedFiles(), clear);
+  if (result.freedBytes) {
+    for (const job of jobs.values()) {
+      if (job.state === 'ready' && job.artifact.root === root && !await isComplete(job.artifact)) {
+        job.state = 'evicted'; job.isPlayable = false; job.availableSeconds = 0; job.bytes = 0;
+        job.error = '缓存已清理，可以重新解析';
+      }
     }
-    const proxy = proxyUrl();
-    if (proxy) args.push('-http_proxy', proxy);
-    const headers = { ...info.http_headers, ...format.http_headers };
-    const headerText = Object.entries(headers)
-      .filter(([key, value]) => /^[\w-]+$/.test(key) && !/[\r\n]/.test(value) && !/^(host|range|content-length|accept-encoding)$/i.test(key))
-      .map(([key, value]) => `${key}: ${value}\r\n`).join('');
-    if (headerText) args.push('-headers', headerText);
-    args.push('-i', format.url);
   }
-  const videoIndex = formats.findIndex(f => f.vcodec && f.vcodec !== 'none');
-  const audioIndex = formats.findIndex(f => f.acodec && f.acodec !== 'none');
-  if (videoIndex < 0 || audioIndex < 0) throw new Error('视频或音轨缺失');
-  // Copy the original compressed packets. No encoder, scaling or frame-rate conversion.
-  args.push('-map', `${videoIndex}:v:0`, '-map', `${audioIndex}:a:0`,
-    '-map_metadata', '-1', '-map_chapters', '-1', '-c', 'copy',
-    '-movflags', '+faststart', '-f', 'mp4', output);
-  return args;
+  return result;
 }
 
-async function pruneCache(root: string, reserve: number, keep: string) {
-  const entries = await fs.readdir(root, { withFileTypes: true });
-  const files = await Promise.all(entries.filter(e => e.isFile() && /^[a-f0-9]{64}\.mp4$/.test(e.name)).map(async e => {
-    const file = path.join(root, e.name);
-    return { file, stat: await fs.stat(file) };
-  }));
-  let total = files.reduce((sum, file) => sum + file.stat.size, 0);
-  for (const item of files.sort((a, b) => a.stat.atimeMs - b.stat.atimeMs)) {
-    if (total + reserve <= config.cacheMaxBytes) break;
-    if (item.file === keep || [...jobs.values()].some(j => j.file === item.file && Date.now() - j.lastUsed < 120_000)) continue;
-    try { await fs.unlink(item.file); total -= item.stat.size; } catch { /* A player may still hold the file open. */ }
-  }
-  if (total + reserve > config.cacheMaxBytes) throw new Error('缓存空间不足；等待当前视频播放完成，或增大 cache-max-gb');
+function markPlayable(job: ManagedJob) {
+  if (job.isPlayable || job.abort.signal.aborted) return;
+  job.isPlayable = true;
+  job.first.resolve(job.file);
 }
 
-async function prepare(job: LosslessJob) {
-  const root = path.dirname(job.file);
-  await fs.mkdir(root, { recursive: true });
-  const existing = await fs.stat(job.file).catch(() => undefined);
-  if (existing?.size) {
-    job.bytes = existing.size;
-    job.state = 'ready';
-    return job.file;
-  }
-  const formats = selectedFormats(job.info);
-  const estimate = formats.reduce((sum, f) => sum + (f.filesize ?? f.filesize_approx ?? 0), 0);
-  const reserve = Math.ceil(estimate * 1.1) || Math.min(512 * 1024 ** 2, config.cacheMaxBytes);
-  if (reserve > config.cacheMaxBytes) throw new Error('视频超过缓存上限，请增大 cache-max-gb；不会自动降低画质');
-  await pruneCache(root, reserve, job.file);
-  const disk = await fs.statfs(root);
-  if (disk.bavail * disk.bsize < reserve + 200 * 1024 ** 2) throw new Error('磁盘空间不足，无法保存原始画质的视频');
-  const partial = job.file.replace(/\.mp4$/, '.partial.mp4');
-  const abort = new AbortController();
-  let limitError = '';
-  job.state = 'preparing';
-  log.withFields(qualitySummary(job.info)).log('下载并封装原始音视频，首次加载需要等待');
-  const monitor = setInterval(async () => {
-    job.bytes = (await fs.stat(partial).catch(() => undefined))?.size ?? 0;
-    if (job.bytes > config.cacheMaxBytes) { limitError = '视频超过缓存上限；不会自动降低画质'; abort.abort(); }
-    const disk = await fs.statfs(root).catch(() => undefined);
-    if (disk && disk.bavail * disk.bsize < 100 * 1024 ** 2) { limitError = '磁盘剩余空间不足，已停止缓存'; abort.abort(); }
-  }, 1000);
+async function prepare(job: ManagedJob) {
+  const { artifact, settings } = job;
+  let touched = false;
+  let monitor: ReturnType<typeof setInterval> | undefined;
+  let monitoring: Promise<void> | undefined;
+  let failure: string | undefined;
   try {
-    await runProcess(config.ffmpeg, buildRemuxArgs(job.info, partial), {
-      timeoutMs: config.prepareTimeoutMs, signal: abort.signal,
-    });
-    const stat = await fs.stat(partial);
-    if (!stat.size) throw new Error('封装没有生成视频数据');
-    if (stat.size > config.cacheMaxBytes) throw new Error('视频超过缓存上限；不会自动降低画质');
-    await pruneCache(root, stat.size, job.file);
-    await fs.rename(partial, job.file);
-    job.bytes = stat.size;
+    if (job.abort.signal.aborted) throw new Error('处理已取消');
+    await fs.mkdir(path.dirname(artifact.file), { recursive: true });
+    if (await isComplete(artifact)) {
+      job.bytes = artifact.hls ? await artifactBytes(artifact) : (await fs.stat(artifact.file)).size;
+    } else {
+      const estimate = selectedFormats(job.info).reduce((sum, f) => sum + (f.filesize ?? f.filesize_approx ?? 0), 0);
+      const reserve = Math.ceil(estimate * 1.1) || Math.max(1, Math.min(512 * 1024 ** 2, Math.floor(settings.maxBytes / 4)));
+      if (reserve > settings.maxBytes) throw new Error('视频超过缓存上限，请增大 cache-max-gb；不会自动降低画质');
+      await discardPartial(artifact);
+      await fs.mkdir(path.dirname(artifact.work), { recursive: true });
+      touched = true;
+      await maintainCache(artifact.root, settings.maxBytes, reserve);
+      const disk = await fs.statfs(artifact.root);
+      if (disk.bavail * disk.bsize < reserve + 200 * 1024 ** 2) throw new Error('磁盘空间不足，无法缓存原始画质');
+      if (job.abort.signal.aborted) throw new Error('处理已取消');
+      job.state = 'preparing';
+      log.withFields({ ...qualitySummary(job.info), delivery: artifact.hls ? 'hls' : 'mp4' }).log('开始复制源音视频');
+      const poll = async () => {
+        job.bytes = await artifactBytes(artifact);
+        await maintainCache(artifact.root, settings.maxBytes);
+        const disk = await fs.statfs(artifact.root);
+        if (disk.bavail * disk.bsize < 100 * 1024 ** 2) throw new Error('磁盘剩余空间不足，已停止缓存');
+        if (artifact.hls) {
+          const text = await fs.readFile(artifact.file, 'utf8').catch(() => '');
+          job.availableSeconds = [...text.matchAll(/^#EXTINF:([\d.]+)/gm)].reduce((sum, match) => sum + Number(match[1]), 0);
+          if (!job.isPlayable && await playlistReady(artifact)) markPlayable(job);
+        }
+      };
+      monitor = setInterval(() => {
+        if (monitoring || job.abort.signal.aborted) return;
+        monitoring = poll().catch(error => { failure = safeError(error); job.abort.abort(); }).finally(() => { monitoring = undefined; });
+      }, 500);
+      await runProcess(settings.ffmpeg, buildRemuxArgs(job.info, artifact.work, {
+        proxy: settings.proxy, boundedRequests: settings.boundedRequests, hls: artifact.hls,
+      }), {
+        timeoutMs: settings.timeoutMs, signal: job.abort.signal, captureOutput: false,
+        onStdout: progressReader((seconds, speed) => { job.mediaSeconds = seconds; job.speed = speed; }),
+      });
+      clearInterval(monitor);
+      await monitoring;
+      if (job.abort.signal.aborted) throw new Error(failure || '处理已取消');
+      job.bytes = await artifactBytes(artifact);
+      if (!job.bytes) throw new Error('封装没有生成视频数据');
+      await maintainCache(artifact.root, settings.maxBytes);
+      if (artifact.hls) {
+        if (!await playlistReady(artifact, true)) throw new Error('HLS 分片尚未完整生成');
+      } else await fs.rename(artifact.work, artifact.file);
+    }
+    if (job.abort.signal.aborted) throw new Error('处理已取消');
     job.state = 'ready';
-    log.withFields({ videoId: job.info.id, bytes: job.bytes }).log('无损封装完成，可以播放和拖动进度');
-    return job.file;
+    job.mediaSeconds = job.info.duration ?? job.mediaSeconds;
+    job.availableSeconds = job.mediaSeconds;
+    markPlayable(job);
+    job.done.resolve(job.file);
+    log.withFields({ videoId: job.info.id, bytes: job.bytes }).log('无损播放资源已准备完成');
   } catch (error) {
-    await fs.unlink(partial).catch(() => {});
-    if (limitError) throw new Error(limitError);
-    throw error;
-  } finally { clearInterval(monitor); }
+    if (monitor) clearInterval(monitor);
+    await monitoring;
+    if (touched) {
+      await discardPartial(artifact).catch(() => {});
+      job.bytes = await artifactBytes(artifact).catch(() => job.bytes);
+    }
+    job.state = job.abort.signal.aborted && !failure ? 'cancelled' : 'failed';
+    job.error = failure || safeError(error);
+    job.isPlayable = false;
+    job.availableSeconds = 0;
+    job.first.reject(new Error(job.error));
+    job.done.reject(new Error(job.error));
+    if (job.state === 'failed') log.withFields({ videoId: job.info.id, error: job.error }).error('准备失败；可以重新解析后重试');
+  } finally { if (monitor) clearInterval(monitor); }
 }
 
-export async function createLosslessJob(info: MediaInfo): Promise<LosslessJob> {
-  if (info.is_live || info.live_status === 'is_live' || info.live_status === 'is_upcoming') {
-    throw new Error('原始画质缓存模式用于点播视频；直播请手动选择 hls-direct 模式');
-  }
-  qualitySummary(info);
-  await checkFfmpeg();
-  const formats = selectedFormats(info);
-  const key = createHash('sha256').update(JSON.stringify(['mp4-copy-v1', info.id, formats.map(f => f.format_id), info.duration])).digest('hex');
-  const file = path.resolve(config.cacheDir, 'lossless-v1', `${key}.mp4`);
-  const previous = jobs.get(file);
-  if (previous && previous.state !== 'failed' && (previous.state !== 'ready' || await Bun.file(file).exists())) {
-    previous.lastUsed = Date.now();
-    return previous;
-  }
-  if ([...jobs.values()].filter(j => j.state === 'queued' || j.state === 'preparing').length >= 4) {
-    throw new Error('已有多个视频等待准备，请稍后再试');
-  }
-  for (const [id, job] of jobs) {
-    if (job.state !== 'preparing' && job.state !== 'queued' && Date.now() - job.lastUsed > 6 * 3600_000) jobs.delete(id);
-  }
-  const job: LosslessJob = { key, file, info, state: 'queued', bytes: 0, lastUsed: Date.now(), ready: Promise.resolve(file) };
-  jobs.set(file, job);
-  job.ready = queue.then(() => prepare(job)).catch(error => {
-    job.state = 'failed';
-    job.error = safeError(error);
-    log.withFields({ videoId: info.id, error: job.error }).error('封装失败，没有自动改用低清版本');
-    throw error;
-  });
-  // A single worker bounds CPU, bandwidth and temporary disk use. Rejections are observed
-  // even when a player abandons the URL before requesting it.
-  queue = job.ready.catch(() => {});
-  return job;
+export function createLosslessJob(info: MediaInfo, mode: StreamMode = config.streamMode): Promise<LosslessJob> {
+  const hls = isHlsMode(mode);
+  const key = createHash('sha256').update(JSON.stringify([hls ? 'hls-copy-v1' : 'mp4-copy-v1', info.id,
+    (info.requested_formats?.length ? info.requested_formats : [info]).map(f => f.format_id), info.duration])).digest('hex');
+  const artifact = artifactFor(config.cacheDir, key, hls);
+  const fingerprint = `${artifact.file}|${mode}`;
+  const inFlight = creating.get(fingerprint);
+  if (inFlight) return inFlight;
+  // Snapshot mutable configuration: changing the wizard must not alter an active task.
+  const settings = { ffmpeg: config.ffmpeg, proxy: proxyUrl(), timeoutMs: config.prepareTimeoutMs, maxBytes: config.cacheMaxBytes };
+  const result = (async (): Promise<LosslessJob> => {
+    if (info.is_live || info.live_status === 'is_live' || info.live_status === 'is_upcoming') {
+      throw new Error('原始画质准备模式用于点播视频；直播请手动选择 hls-direct 模式');
+    }
+    qualitySummary(info);
+    const previousId = latest.get(fingerprint);
+    const previous = previousId ? jobs.get(previousId) : undefined;
+    if (previous && (['queued', 'preparing'].includes(previous.state) || (previous.state === 'ready' && await isComplete(artifact)))) {
+      previous.lastUsed = Date.now();
+      return previous;
+    }
+    const capability = await checkFfmpeg(settings.ffmpeg);
+    if ([...jobs.values()].filter(active).length >= 4) throw new Error('已有多个视频等待准备，请取消不需要的任务或稍后重试');
+    for (const [id, job] of jobs) {
+      if (!active(job) && (jobs.size >= 128 || Date.now() - job.lastUsed > 6 * 3600_000)) jobs.delete(id);
+    }
+    for (const [key, id] of latest) if (!jobs.has(id)) latest.delete(key);
+    const done = deferred();
+    const first = deferred();
+    const job: ManagedJob = {
+      id: randomUUID(), key, file: artifact.file, artifact, mode, info, state: 'queued', bytes: 0,
+      mediaSeconds: 0, availableSeconds: 0, lastUsed: Date.now(), isPlayable: false,
+      done, first, ready: done.promise, playable: first.promise, abort: new AbortController(),
+      settings: { ...settings, ...capability },
+    };
+    jobs.set(job.id, job);
+    latest.set(fingerprint, job.id);
+    queue = queue.then(async () => { if (job.state !== 'cancelled') await prepare(job); }).catch(() => {});
+    return job;
+  })();
+  creating.set(fingerprint, result);
+  void result.then(() => creating.delete(fingerprint), () => creating.delete(fingerprint));
+  return result;
 }
+
+export const getLosslessJob = (id: string): LosslessJob | undefined => jobs.get(id);
+export function cancelLosslessJob(id: string) {
+  const job = jobs.get(id);
+  if (!job || !['queued', 'preparing'].includes(job.state)) return false;
+  job.abort.abort();
+  job.isPlayable = false;
+  if (job.state === 'queued') {
+    job.state = 'cancelled'; job.error = '处理已取消';
+    job.first.reject(new Error(job.error)); job.done.reject(new Error(job.error));
+  } else job.state = 'cancelling';
+  return true;
+}
+
+export async function cancelAllJobs() {
+  for (const job of jobs.values()) cancelLosslessJob(job.id);
+  await Promise.allSettled([...jobs.values()].map(job => job.ready));
+}
+
+export const clearUnusedCache = () => maintainCache(path.resolve(config.cacheDir), config.cacheMaxBytes, 0, true);
 
 export function cacheStatus() {
-  return [...jobs.values()].map(job => ({ ...qualitySummary(job.info), state: job.state, bytes: job.bytes, error: job.error }));
+  let position = 0;
+  return [...jobs.values()].map(job => {
+    const duration = job.info.duration;
+    const progress = job.state === 'ready' ? 100 : duration ? Math.min(99.9, job.mediaSeconds / duration * 100) : undefined;
+    return { id: job.id, ...qualitySummary(job.info), mode: job.mode, delivery: job.artifact.hls ? 'hls' : 'mp4',
+      state: job.state, bytes: job.bytes, error: job.error, isPlayable: job.isPlayable,
+      progressPercent: progress, mediaSeconds: job.mediaSeconds, availableSeconds: job.availableSeconds, duration,
+      queuePosition: job.state === 'queued' ? ++position : undefined,
+      remainingSeconds: duration && job.speed && job.state === 'preparing' ? Math.max(0, (duration - job.mediaSeconds) / job.speed) : undefined,
+      warnings: compatibilityNotes(job.info, job.artifact.hls),
+    };
+  });
 }

@@ -1,4 +1,6 @@
-export type StreamMode = 'lossless' | 'lossless-compatible' | 'mp4' | 'hls-direct' | 'hls-mux';
+export const streamModes = ['lossless', 'lossless-compatible', 'lossless-hls', 'lossless-hls-compatible', 'mp4', 'hls-direct', 'hls-mux'] as const;
+export type StreamMode = typeof streamModes[number];
+export const isStreamMode = (value: unknown): value is StreamMode => streamModes.includes(value as StreamMode);
 
 const config = {
   ytdlp: '',
@@ -21,20 +23,22 @@ const config = {
 
 export default config
 
-export const isLosslessMode = () => ['lossless', 'lossless-compatible', 'hls-mux'].includes(config.streamMode);
+export const isLosslessMode = (mode = config.streamMode) => mode.startsWith('lossless') || mode === 'hls-mux';
+export const isHlsMode = (mode = config.streamMode) => mode === 'lossless-hls' || mode === 'lossless-hls-compatible';
 
-export const getFormatSelector = () => {
-  switch (config.streamMode) {
+export const getFormatSelector = (mode = config.streamMode) => {
+  switch (mode) {
     case 'mp4': return 'b[protocol=https][ext=mp4]';
     case 'hls-direct': return 'b';
     case 'lossless-compatible':
+    case 'lossless-hls-compatible':
       // Select existing H.264/AAC streams. Never transcode another codec to them.
       return 'bv[vcodec^=avc1]+ba[acodec^=mp4a]/b[vcodec^=avc1][acodec^=mp4a]';
     default: return 'bv*+ba/b';
   }
 };
 
-export const getYtdlpArgs = () => {
+export const getYtdlpArgs = (mode = config.streamMode) => {
   const args: string[] = [];
   if (!config.ytdlpKeepConfig) {
     if (config.ytdlpCookiesTxt) {
@@ -49,7 +53,7 @@ export const getYtdlpArgs = () => {
   }
   // These output/selection options belong to the relay even when using a user config.
   args.push('--no-playlist', '--skip-download', '--dump-single-json', '--no-progress',
-    '--socket-timeout', '15', '--retries', '2', '-f', getFormatSelector());
+    '--socket-timeout', '15', '--retries', '2', '-f', getFormatSelector(mode));
   return args;
 }
 
